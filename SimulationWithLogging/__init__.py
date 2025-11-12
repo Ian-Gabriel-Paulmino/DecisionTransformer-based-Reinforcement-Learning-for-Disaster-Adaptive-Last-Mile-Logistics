@@ -1,1 +1,2 @@
 from .MonteCarloWithLogging import MonteCarloSimulationWithLogging
+from .MonteCarloWithLogging import MonteCarloSimulationWorkerWithLogging

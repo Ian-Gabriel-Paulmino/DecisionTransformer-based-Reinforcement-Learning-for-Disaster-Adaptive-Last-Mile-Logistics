@@ -1,0 +1,86 @@
+{
+  "statistics": {
+    "overall": {
+      "total": 19500,
+      "success_count": 12276,
+      "success_rate": 62.95384615384615,
+      "reward_stats": {
+        "min": -470.3063632651494,
+        "q25": -164.81265660697446,
+        "median": -129.55332489024062,
+        "q75": -7.092467533972755,
+        "max": 0.0,
+        "mean": -105.38575099062406,
+        "std": 81.51562448871073
+      },
+      "time_stats": {
+        "min": 4.515860098596653,
+        "q25": 128.98478811968263,
+        "median": 130.64101481630877,
+        "q75": 169.0393474338747,
+        "max": 470.3063632651494,
+        "mean": 135.77946113757312,
+        "std": 66.59086943042934
+      }
+    },
+    "by_weather": {
+      "1": {
+        "count": 7185,
+        "success_count": 7185,
+        "success_rate": 100.0,
+        "reward_median": -129.9630848729397,
+        "time_median": 129.9630848729397,
+        "time_mean": 130.31606627873705,
+        "avg_trajectory_length": 20.0
+      },
+      "2": {
+        "count": 2608,
+        "success_count": 2608,
+        "success_rate": 100.0,
+        "reward_median": -168.97172357312513,
+        "time_median": 168.97172357312513,
+        "time_mean": 169.47317167876787,
+        "avg_trajectory_length": 20.0
+      },
+      "3": {
+        "count": 2479,
+        "success_count": 2479,
+        "success_rate": 100.0,
+        "reward_median": -239.61558006048165,
+        "time_median": 239.61558006048165,
+        "time_mean": 240.2343963771191,
+        "avg_trajectory_length": 20.0
+      },
+      "4": {
+        "count": 3320,
+        "success_count": 4,
+        "success_rate": 0.12048192771084339,
+        "reward_median": -16.53468909115692,
+        "time_median": 18.524360635037056,
+        "time_mean": 28.352814441962465,
+        "avg_trajectory_length": 4.119879518072289
+      },
+      "5": {
+        "count": 3908,
+        "success_count": 0,
+        "success_rate": 0.0,
+        "reward_median": 0.0,
+        "time_median": null,
+        "time_mean": null,
+        "avg_trajectory_length": 1.0
+      }
+    }
+  },
+  "problems": [],
+  "warnings": [
+    "\u26a0\ufe0f  MODERATE IMBALANCE: 2.9x ratio"
+  ],
+  "total_trajectories": 19500,
+  "weather_distribution": {
+    "1": 7185,
+    "2": 2608,
+    "3": 2479,
+    "4": 3320,
+    "5": 3908
+  }
+}
