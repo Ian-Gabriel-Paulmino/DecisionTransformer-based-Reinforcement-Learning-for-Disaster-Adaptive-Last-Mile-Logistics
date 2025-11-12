@@ -307,17 +307,402 @@
         
 #         self.writer.close()
 
+# """
+# Decision Transformer Trainer - FULLY FIXED VERSION
+# Optimized for limited data with proper device handling
+# """
+# import torch
+# import torch.nn as nn
+# import torch.optim as optim
+# from torch.utils.tensorboard import SummaryWriter
+# import numpy as np
+# from tqdm import tqdm
+# import os
+# from datetime import datetime
+
+
+# print("✓ Loading FIXED trainer.py - Version 2.0")
+
+
+# class DecisionTransformerTrainer:
+#     """
+#     Enhanced trainer optimized for limited data
+    
+#     Key features:
+#     - Proper device handling (no CPU/GPU mixing)
+#     - Quality-weighted loss
+#     - Return aspiration
+#     - Early stopping
+#     - Optimized for 6K+ samples
+#     """
+    
+#     def __init__(self, model, config, train_loader, val_loader, 
+#                  save_dir='checkpoints', device=None):
+#         """Initialize trainer with proper device handling"""
+        
+#         print("\n" + "="*60)
+#         print("Initializing Decision Transformer Trainer")
+#         print("="*60)
+        
+#         self.model = model
+#         self.config = config
+#         self.train_loader = train_loader
+#         self.val_loader = val_loader
+#         self.save_dir = save_dir
+        
+#         # Device setup
+#         if device is None:
+#             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#         else:
+#             self.device = device
+        
+#         print(f"Device: {self.device}")
+#         self.model.to(self.device)
+        
+#         # Optimizer - reduced LR for limited data
+#         self.optimizer = optim.AdamW(
+#             model.parameters(),
+#             lr=3e-5,  # Conservative for small dataset
+#             weight_decay=0.01,
+#             betas=(0.9, 0.999)
+#         )
+#         print(f"Learning rate: 3e-5")
+        
+#         # Learning rate scheduler
+#         self.warmup_steps = 200
+#         self.total_steps = len(train_loader) * 100
+#         self.scheduler = self._create_scheduler()
+        
+#         # Loss function
+#         self.criterion = nn.CrossEntropyLoss(reduction='none')
+        
+#         # Tracking
+#         self.current_step = 0
+#         self.best_val_loss = float('inf')
+#         self.patience = 20  # Early stopping
+#         self.patience_counter = 0
+#         self.min_delta = 0.001
+        
+#         # TensorBoard
+#         log_dir = f'runs/dt_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+#         self.writer = SummaryWriter(log_dir)
+#         print(f"TensorBoard: {log_dir}")
+        
+#         os.makedirs(save_dir, exist_ok=True)
+#         print("="*60 + "\n")
+    
+#     def _create_scheduler(self):
+#         """Create learning rate scheduler with warmup and cosine decay"""
+#         def lr_lambda(step):
+#             if step < self.warmup_steps:
+#                 return step / self.warmup_steps
+#             progress = (step - self.warmup_steps) / (self.total_steps - self.warmup_steps)
+#             return 0.5 * (1 + np.cos(np.pi * progress))
+        
+#         return optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
+    
+#     def compute_trajectory_quality_weights(self, batch):
+#         final_returns = batch['returns'][:, 0, 0]  # GPU
+#         batch_size = final_returns.shape[0]
+        
+#         # Convert to Python scalars (avoids device issues)
+#         min_val = final_returns.min().item()  # Python float
+#         max_val = final_returns.max().item()  # Python float
+        
+#         if (max_val - min_val) > 1e-8:
+#             # Create tensors explicitly on GPU
+#             min_tensor = torch.tensor(min_val, device=self.device)
+#             max_tensor = torch.tensor(max_val, device=self.device)
+            
+#             # Now all operations are GPU tensors
+#             normalized = (final_returns - min_tensor) / (max_tensor - min_tensor + 1e-8)
+#             offset = torch.tensor(0.5, device=self.device)
+#             weights = normalized + offset
+#         else:
+#             # Explicitly create on GPU
+#             weights = torch.ones(batch_size, device=self.device)
+        
+#         return weights  # Guaranteed GPU!
+    
+#     def compute_return_aspiration(self, returns_tensor):
+#         """
+#         Apply return aspiration - aim for better performance
+        
+#         Modifies returns to be 15-25% better (less negative = faster)
+        
+#         Args:
+#             returns_tensor: (batch_size, seq_len, 1) on GPU
+        
+#         Returns:
+#             aspirational_returns: Same shape, same device
+#         """
+#         improvement = np.random.uniform(0.75, 0.85)
+#         return returns_tensor * improvement
+    
+#     def train_epoch(self, epoch, use_aspiration=True):
+#         """
+#         Train for one epoch with quality weighting
+        
+#         Args:
+#             epoch: Current epoch number
+#             use_aspiration: Whether to use return aspiration (default: True)
+        
+#         Returns:
+#             (avg_loss, avg_accuracy): Tuple of metrics
+#         """
+#         self.model.train()
+        
+#         total_loss = 0.0
+#         total_weighted_loss = 0.0
+#         correct_predictions = 0
+#         total_predictions = 0
+        
+#         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch+1} [Train]')
+        
+#         for batch_idx, batch in enumerate(pbar):
+#             # Move batch to device
+#             returns = batch['returns'].to(self.device)
+#             states = batch['states'].to(self.device)
+#             actions = batch['actions'].to(self.device)
+#             timesteps = batch['timesteps'].to(self.device)
+#             attention_mask = batch['attention_mask'].to(self.device)
+            
+#             batch_size = returns.shape[0]
+            
+#             # Apply return aspiration 50% of time
+#             if use_aspiration and np.random.random() < 0.5:
+#                 returns = self.compute_return_aspiration(returns)
+            
+#             # Forward pass
+#             action_logits = self.model(
+#                 returns, states, actions, timesteps, attention_mask
+#             )
+            
+#             # Compute loss (predict next action)
+#             target_actions = actions[:, 1:].contiguous()
+#             predicted_logits = action_logits[:, :-1, :].contiguous()
+            
+#             # Cross-entropy loss per token
+#             loss_per_token = self.criterion(
+#                 predicted_logits.view(-1, self.config.num_actions),
+#                 target_actions.view(-1)
+#             )
+#             loss_per_token = loss_per_token.view(batch_size, -1)
+            
+#             # Quality weighting
+#             trajectory_weights = self.compute_trajectory_quality_weights(batch)
+            
+#             # Apply weights (broadcast across sequence)
+#             weighted_loss = loss_per_token * trajectory_weights.unsqueeze(1)
+#             loss = weighted_loss.mean()
+            
+#             # Backward pass
+#             self.optimizer.zero_grad()
+#             loss.backward()
+            
+#             # Gradient clipping for stability
+#             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            
+#             # Update parameters
+#             self.optimizer.step()
+#             self.scheduler.step()
+            
+#             # Track metrics
+#             total_loss += loss_per_token.mean().item()
+#             total_weighted_loss += loss.item()
+            
+#             # Calculate accuracy
+#             predictions = torch.argmax(predicted_logits, dim=-1)
+#             correct = (predictions == target_actions).sum().item()
+#             correct_predictions += correct
+#             total_predictions += target_actions.numel()
+            
+#             # Update progress bar
+#             batch_acc = correct / target_actions.numel()
+#             pbar.set_postfix({
+#                 'loss': f'{loss.item():.4f}',
+#                 'acc': f'{batch_acc:.3f}',
+#                 'lr': f'{self.scheduler.get_last_lr()[0]:.2e}'
+#             })
+            
+#             # TensorBoard logging
+#             if self.current_step % 10 == 0:
+#                 self.writer.add_scalar('Train/Loss', loss.item(), self.current_step)
+#                 self.writer.add_scalar('Train/Accuracy', batch_acc, self.current_step)
+#                 self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.current_step)
+            
+#             self.current_step += 1
+        
+#         # Epoch metrics
+#         avg_loss = total_loss / len(self.train_loader)
+#         avg_weighted_loss = total_weighted_loss / len(self.train_loader)
+#         avg_accuracy = correct_predictions / total_predictions
+        
+#         return avg_weighted_loss, avg_accuracy
+    
+#     def validate(self, epoch):
+#         """
+#         Validate the model
+        
+#         Args:
+#             epoch: Current epoch number
+        
+#         Returns:
+#             (avg_loss, avg_accuracy): Tuple of validation metrics
+#         """
+#         self.model.eval()
+        
+#         total_loss = 0.0
+#         correct_predictions = 0
+#         total_predictions = 0
+        
+#         pbar = tqdm(self.val_loader, desc=f'Epoch {epoch+1} [Val]')
+        
+#         with torch.no_grad():
+#             for batch in pbar:
+#                 # Move to device
+#                 returns = batch['returns'].to(self.device)
+#                 states = batch['states'].to(self.device)
+#                 actions = batch['actions'].to(self.device)
+#                 timesteps = batch['timesteps'].to(self.device)
+#                 attention_mask = batch['attention_mask'].to(self.device)
+                
+#                 # Forward pass
+#                 action_logits = self.model(
+#                     returns, states, actions, timesteps, attention_mask
+#                 )
+                
+#                 # Compute loss
+#                 target_actions = actions[:, 1:].contiguous()
+#                 predicted_logits = action_logits[:, :-1, :].contiguous()
+                
+#                 loss_per_token = self.criterion(
+#                     predicted_logits.view(-1, self.config.num_actions),
+#                     target_actions.view(-1)
+#                 )
+                
+#                 loss = loss_per_token.mean()
+#                 total_loss += loss.item()
+                
+#                 # Calculate accuracy
+#                 predictions = torch.argmax(predicted_logits, dim=-1)
+#                 correct = (predictions == target_actions).sum().item()
+#                 correct_predictions += correct
+#                 total_predictions += target_actions.numel()
+                
+#                 # Update progress bar
+#                 pbar.set_postfix({
+#                     'loss': f'{loss.item():.4f}',
+#                     'acc': f'{correct / target_actions.numel():.3f}'
+#                 })
+        
+#         # Validation metrics
+#         avg_loss = total_loss / len(self.val_loader)
+#         avg_accuracy = correct_predictions / total_predictions
+        
+#         # TensorBoard
+#         self.writer.add_scalar('Val/Loss', avg_loss, epoch)
+#         self.writer.add_scalar('Val/Accuracy', avg_accuracy, epoch)
+        
+#         return avg_loss, avg_accuracy
+    
+#     def save_checkpoint(self, epoch, val_loss, is_best=False):
+#         """Save model checkpoint"""
+#         checkpoint = {
+#             'epoch': epoch,
+#             'model_state_dict': self.model.state_dict(),
+#             'optimizer_state_dict': self.optimizer.state_dict(),
+#             'scheduler_state_dict': self.scheduler.state_dict(),
+#             'val_loss': val_loss,
+#             'best_val_loss': self.best_val_loss,
+#             'config': self.config.__dict__
+#         }
+        
+#         # Save regular checkpoint
+#         path = os.path.join(self.save_dir, f'checkpoint_epoch_{epoch+1}.pt')
+#         torch.save(checkpoint, path)
+        
+#         # Save best model
+#         if is_best:
+#             best_path = os.path.join(self.save_dir, 'best_model.pt')
+#             torch.save(checkpoint, best_path)
+#             print(f"  ✓ Saved best model (val_loss: {val_loss:.4f})")
+    
+#     def train(self, num_epochs=100, save_every=10):
+#         """
+#         Main training loop with early stopping
+        
+#         Args:
+#             num_epochs: Maximum number of epochs
+#             save_every: Save checkpoint every N epochs
+#         """
+#         print("\n" + "="*60)
+#         print(f"Starting Training - {num_epochs} epochs max")
+#         print("="*60)
+#         print("Features:")
+#         print("  ✓ Quality-weighted loss")
+#         print("  ✓ Return aspiration (50% of batches)")
+#         print("  ✓ Early stopping (patience=20)")
+#         print("  ✓ Gradient clipping")
+#         print("  ✓ Learning rate warmup + cosine decay")
+#         print("="*60 + "\n")
+        
+#         for epoch in range(num_epochs):
+#             # Train
+#             train_loss, train_acc = self.train_epoch(epoch, use_aspiration=True)
+            
+#             # Validate
+#             val_loss, val_acc = self.validate(epoch)
+            
+#             # Print summary
+#             print(f"\nEpoch {epoch+1}/{num_epochs} Summary:")
+#             print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
+#             print(f"  Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.4f}")
+            
+#             # Check for improvement
+#             is_best = val_loss < (self.best_val_loss - self.min_delta)
+            
+#             if is_best:
+#                 self.best_val_loss = val_loss
+#                 self.patience_counter = 0
+#                 print(f"  ✓ New best validation loss!")
+#             else:
+#                 self.patience_counter += 1
+#                 print(f"  No improvement ({self.patience_counter}/{self.patience})")
+            
+#             # Save checkpoint
+#             if (epoch + 1) % save_every == 0 or is_best:
+#                 self.save_checkpoint(epoch, val_loss, is_best)
+            
+#             # Early stopping check
+#             if self.patience_counter >= self.patience:
+#                 print(f"\n⚠ Early stopping triggered after {epoch+1} epochs")
+#                 print(f"   No improvement for {self.patience} consecutive epochs")
+#                 break
+            
+#             # Check for overfitting
+#             train_val_gap = abs(train_loss - val_loss)
+#             if train_val_gap > 0.8:
+#                 print(f"  ⚠ Large train-val gap ({train_val_gap:.3f}) - possible overfitting")
+            
+#             print()
+        
+#         # Training complete
+#         print("\n" + "="*60)
+#         print("Training Complete!")
+#         print("="*60)
+#         print(f"Best validation loss: {self.best_val_loss:.4f}")
+#         print(f"Total epochs: {epoch+1}")
+#         print(f"Checkpoints saved to: {self.save_dir}")
+#         print("="*60 + "\n")
+        
+#         self.writer.close()
+
+
 
 """
-Improved Training Objective - Learn to BEAT NNA, not copy it
-
-Key Innovation:
-Instead of just learning "what did NNA do?", we train on:
-1. Trajectory quality weighting (better routes get more influence)
-2. Contrastive learning (good choices vs bad choices)
-3. Reward-conditioned training (condition on better-than-achieved rewards)
-
-This allows the model to learn patterns that EXCEED NNA performance.
+Decision Transformer Trainer - SIMPLIFIED CPU VERSION
+No GPU complications, just straightforward training
 """
 import torch
 import torch.nn as nn
@@ -329,73 +714,69 @@ import os
 from datetime import datetime
 
 
+print("✓ Loading SIMPLIFIED CPU trainer.py")
+
+
 class DecisionTransformerTrainer:
     """
-    Enhanced trainer that learns to beat NNA baseline
-    
-    Key improvements:
-    1. Quality-weighted loss (better trajectories = more weight)
-    2. Return conditioning with aspiration (aim higher than achieved)
-    3. Trajectory filtering (learn from best examples)
+    Simplified trainer - CPU only, no quality weighting complications
     """
     
     def __init__(self, model, config, train_loader, val_loader, 
                  save_dir='checkpoints', device=None):
-        """
-        Initialize improved trainer
+        """Initialize trainer"""
         
-        Args:
-            model: DecisionTransformer instance
-            config: DecisionTransformerConfig instance
-            train_loader: Training data loader
-            val_loader: Validation data loader
-            save_dir: Directory to save checkpoints
-            device: torch device
-        """
+        print("\n" + "="*60)
+        print("Initializing Decision Transformer Trainer (CPU Mode)")
+        print("="*60)
+        
         self.model = model
         self.config = config
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.save_dir = save_dir
         
-        # Device
-        if device is None:
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        else:
-            self.device = device
+        # Force CPU to avoid device issues
+        self.device = torch.device('cpu')
         
-        print(f"Using device: {self.device}")
+        print(f"Device: CPU (forced)")
+        print(f"WARNING: Training will be slower on CPU")
         self.model.to(self.device)
         
         # Optimizer
         self.optimizer = optim.AdamW(
             model.parameters(),
-            lr=1e-4,
+            lr=3e-5,
             weight_decay=0.01,
             betas=(0.9, 0.999)
         )
+        print(f"Learning rate: 3e-5")
         
         # Learning rate scheduler
-        self.warmup_steps = 500  # Reduced for smaller datasets
+        self.warmup_steps = 200
         self.total_steps = len(train_loader) * 100
         self.scheduler = self._create_scheduler()
         
-        # Base loss function
-        self.criterion = nn.CrossEntropyLoss(reduction='none')  # Don't reduce yet
+        # Loss function - simple cross-entropy
+        self.criterion = nn.CrossEntropyLoss()
         
         # Tracking
         self.current_step = 0
         self.best_val_loss = float('inf')
+        self.patience = 20
+        self.patience_counter = 0
+        self.min_delta = 0.001
         
         # TensorBoard
-        log_dir = f'runs/dt_improved_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        log_dir = f'runs/dt_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
         self.writer = SummaryWriter(log_dir)
-        print(f"TensorBoard logs: {log_dir}")
+        print(f"TensorBoard: {log_dir}")
         
         os.makedirs(save_dir, exist_ok=True)
+        print("="*60 + "\n")
     
     def _create_scheduler(self):
-        """Create learning rate scheduler with warmup"""
+        """Create learning rate scheduler"""
         def lr_lambda(step):
             if step < self.warmup_steps:
                 return step / self.warmup_steps
@@ -404,124 +785,41 @@ class DecisionTransformerTrainer:
         
         return optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
     
-    def compute_trajectory_quality_weights(self, batch):
+    def train_epoch(self, epoch):
         """
-        Compute quality weights for each trajectory in batch
-        
-        Better trajectories get higher weights in the loss.
-        This encourages the model to learn from good examples more than bad ones.
-        
-        Quality based on:
-        1. Success (successful > failed)
-        2. Efficiency (shorter time = better)
-        3. Weather severity (harder conditions = more valuable)
-        
-        Args:
-            batch: Batch dict with 'returns', 'states', etc.
-        
-        Returns:
-            weights: Tensor of shape (batch_size,) with quality weights
-        """
-        batch_size = batch['returns'].shape[0]
-        weights = torch.ones(batch_size, device=self.device)
-        
-        # Weight by final return (higher return = faster delivery = better)
-        # Returns are negative time, so more negative = worse
-        final_returns = batch['returns'][:, 0, 0]  # First timestep return (total return-to-go)
-        
-        # Normalize to [0, 1] range within batch
-        min_return = final_returns.min()
-        max_return = final_returns.max()
-        
-        if max_return > min_return:
-            # Better return (closer to 0) gets higher weight
-            normalized_returns = (final_returns - min_return) / (max_return - min_return)
-            weights = normalized_returns + 0.5  # Range [0.5, 1.5]
-        
-        return weights
-    
-    def compute_return_aspiration(self, current_return, percentile=75):
-        """
-        Compute aspirational return for training
-        
-        Instead of conditioning on achieved return, condition on a BETTER return.
-        This encourages the model to aim higher than what NNA achieved.
-        
-        Args:
-            current_return: Actual achieved return
-            percentile: Target percentile (75 = aim for top 25% performance)
-        
-        Returns:
-            aspirational_return: Improved target return
-        """
-        # Aspire to be 20-30% better than achieved
-        # Returns are negative, so multiply by 0.7-0.8 to improve
-        improvement_factor = np.random.uniform(0.7, 0.85)
-        aspirational_return = current_return * improvement_factor
-        
-        return aspirational_return
-    
-    def train_epoch(self, epoch, use_aspiration=True):
-        """
-        Train for one epoch with quality weighting
-        
-        Args:
-            epoch: Current epoch number
-            use_aspiration: Whether to use return aspiration
-        
-        Returns:
-            tuple: (average_loss, average_accuracy)
+        Train for one epoch - SIMPLIFIED
+        No quality weighting, no aspiration, just standard training
         """
         self.model.train()
-        total_loss = 0
-        total_weighted_loss = 0
+        
+        total_loss = 0.0
         correct_predictions = 0
         total_predictions = 0
         
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch+1} [Train]')
         
         for batch_idx, batch in enumerate(pbar):
-            # Move batch to device
+            # Move batch to CPU (already there, but explicit)
             returns = batch['returns'].to(self.device)
             states = batch['states'].to(self.device)
             actions = batch['actions'].to(self.device)
             timesteps = batch['timesteps'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
             
-            batch_size = returns.shape[0]
-            
-            # INNOVATION 1: Apply return aspiration
-            if use_aspiration and np.random.random() < 0.5:  # 50% of time
-                # Modify returns to be more ambitious
-                for i in range(batch_size):
-                    current_return = returns[i, 0, 0].item()
-                    aspirational = self.compute_return_aspiration(current_return)
-                    # Scale entire return sequence proportionally
-                    scale = aspirational / (current_return + 1e-8)
-                    returns[i] = returns[i] * scale
-            
             # Forward pass
             action_logits = self.model(
                 returns, states, actions, timesteps, attention_mask
             )
             
-            # Compute loss (next-token prediction)
+            # Compute loss (predict next action)
             target_actions = actions[:, 1:].contiguous()
             predicted_logits = action_logits[:, :-1, :].contiguous()
             
-            # Reshape for loss computation
-            loss_per_token = self.criterion(
-                predicted_logits.view(-1, self.config.num_actions),
-                target_actions.view(-1)
+            # Simple cross-entropy loss
+            loss = self.criterion(
+                predicted_logits.reshape(-1, self.config.num_actions),
+                target_actions.reshape(-1)
             )
-            loss_per_token = loss_per_token.view(batch_size, -1)
-            
-            # INNOVATION 2: Quality weighting
-            trajectory_weights = self.compute_trajectory_quality_weights(batch)
-            
-            # Apply weights across sequence
-            weighted_loss = loss_per_token * trajectory_weights.unsqueeze(1)
-            loss = weighted_loss.mean()
             
             # Backward pass
             self.optimizer.zero_grad()
@@ -535,42 +833,41 @@ class DecisionTransformerTrainer:
             self.scheduler.step()
             
             # Track metrics
-            total_loss += loss_per_token.mean().item()
-            total_weighted_loss += loss.item()
+            total_loss += loss.item()
             
-            # Accuracy
+            # Calculate accuracy
             predictions = torch.argmax(predicted_logits, dim=-1)
             correct = (predictions == target_actions).sum().item()
             correct_predictions += correct
             total_predictions += target_actions.numel()
             
             # Update progress bar
+            batch_acc = correct / target_actions.numel()
             pbar.set_postfix({
                 'loss': f'{loss.item():.4f}',
-                'acc': f'{correct / target_actions.numel():.3f}',
+                'acc': f'{batch_acc:.3f}',
                 'lr': f'{self.scheduler.get_last_lr()[0]:.2e}'
             })
             
-            # Log to TensorBoard
-            self.writer.add_scalar('Train/Loss', loss.item(), self.current_step)
-            self.writer.add_scalar('Train/WeightedLoss', loss.item(), self.current_step)
-            self.writer.add_scalar('Train/UnweightedLoss', loss_per_token.mean().item(), self.current_step)
-            self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.current_step)
+            # TensorBoard logging
+            if self.current_step % 10 == 0:
+                self.writer.add_scalar('Train/Loss', loss.item(), self.current_step)
+                self.writer.add_scalar('Train/Accuracy', batch_acc, self.current_step)
+                self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.current_step)
             
             self.current_step += 1
         
+        # Epoch metrics
         avg_loss = total_loss / len(self.train_loader)
-        avg_weighted_loss = total_weighted_loss / len(self.train_loader)
         avg_accuracy = correct_predictions / total_predictions
         
-        print(f"  Train - Unweighted Loss: {avg_loss:.4f}, Weighted Loss: {avg_weighted_loss:.4f}")
-        
-        return avg_weighted_loss, avg_accuracy
+        return avg_loss, avg_accuracy
     
     def validate(self, epoch):
         """Validate the model"""
         self.model.eval()
-        total_loss = 0
+        
+        total_loss = 0.0
         correct_predictions = 0
         total_predictions = 0
         
@@ -578,40 +875,46 @@ class DecisionTransformerTrainer:
         
         with torch.no_grad():
             for batch in pbar:
+                # Move to CPU
                 returns = batch['returns'].to(self.device)
                 states = batch['states'].to(self.device)
                 actions = batch['actions'].to(self.device)
                 timesteps = batch['timesteps'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
                 
+                # Forward pass
                 action_logits = self.model(
                     returns, states, actions, timesteps, attention_mask
                 )
                 
+                # Compute loss
                 target_actions = actions[:, 1:].contiguous()
                 predicted_logits = action_logits[:, :-1, :].contiguous()
                 
-                loss_per_token = self.criterion(
-                    predicted_logits.view(-1, self.config.num_actions),
-                    target_actions.view(-1)
+                loss = self.criterion(
+                    predicted_logits.reshape(-1, self.config.num_actions),
+                    target_actions.reshape(-1)
                 )
                 
-                loss = loss_per_token.mean()
                 total_loss += loss.item()
                 
+                # Calculate accuracy
                 predictions = torch.argmax(predicted_logits, dim=-1)
                 correct = (predictions == target_actions).sum().item()
                 correct_predictions += correct
                 total_predictions += target_actions.numel()
                 
+                # Update progress bar
                 pbar.set_postfix({
                     'loss': f'{loss.item():.4f}',
                     'acc': f'{correct / target_actions.numel():.3f}'
                 })
         
+        # Validation metrics
         avg_loss = total_loss / len(self.val_loader)
         avg_accuracy = correct_predictions / total_predictions
         
+        # TensorBoard
         self.writer.add_scalar('Val/Loss', avg_loss, epoch)
         self.writer.add_scalar('Val/Accuracy', avg_accuracy, epoch)
         
@@ -625,30 +928,38 @@ class DecisionTransformerTrainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'val_loss': val_loss,
+            'best_val_loss': self.best_val_loss,
             'config': self.config.__dict__
         }
         
-        path = os.path.join(self.save_dir, f'checkpoint_epoch_{epoch}.pt')
+        # Save regular checkpoint
+        path = os.path.join(self.save_dir, f'checkpoint_epoch_{epoch+1}.pt')
         torch.save(checkpoint, path)
         
+        # Save best model
         if is_best:
             best_path = os.path.join(self.save_dir, 'best_model.pt')
             torch.save(checkpoint, best_path)
             print(f"  ✓ Saved best model (val_loss: {val_loss:.4f})")
     
     def train(self, num_epochs=100, save_every=10):
-        """Main training loop"""
-        print(f"\n{'='*60}")
-        print(f"Starting IMPROVED training for {num_epochs} epochs")
-        print(f"Innovations:")
-        print(f"  ✓ Quality-weighted loss")
-        print(f"  ✓ Return aspiration")
-        print(f"  ✓ Learning from best examples")
-        print(f"{'='*60}\n")
+        """
+        Main training loop with early stopping
+        """
+        print("\n" + "="*60)
+        print(f"Starting Training - {num_epochs} epochs max")
+        print("="*60)
+        print("Mode: CPU only (simplified)")
+        print("Features:")
+        print("  ✓ Standard cross-entropy loss")
+        print("  ✓ Early stopping (patience=20)")
+        print("  ✓ Gradient clipping")
+        print("  ✓ Learning rate warmup + cosine decay")
+        print("="*60 + "\n")
         
         for epoch in range(num_epochs):
             # Train
-            train_loss, train_acc = self.train_epoch(epoch, use_aspiration=True)
+            train_loss, train_acc = self.train_epoch(epoch)
             
             # Validate
             val_loss, val_acc = self.validate(epoch)
@@ -658,19 +969,39 @@ class DecisionTransformerTrainer:
             print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
             print(f"  Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.4f}")
             
-            # Save checkpoint
-            is_best = val_loss < self.best_val_loss
+            # Check for improvement
+            is_best = val_loss < (self.best_val_loss - self.min_delta)
+            
             if is_best:
                 self.best_val_loss = val_loss
+                self.patience_counter = 0
+                print(f"  ✓ New best validation loss!")
+            else:
+                self.patience_counter += 1
+                print(f"  No improvement ({self.patience_counter}/{self.patience})")
             
+            # Save checkpoint
             if (epoch + 1) % save_every == 0 or is_best:
                 self.save_checkpoint(epoch, val_loss, is_best)
             
+            # Early stopping
+            if self.patience_counter >= self.patience:
+                print(f"\n⚠ Early stopping triggered after {epoch+1} epochs")
+                break
+            
+            # Overfitting check
+            train_val_gap = abs(train_loss - val_loss)
+            if train_val_gap > 0.8:
+                print(f"  ⚠ Large train-val gap ({train_val_gap:.3f})")
+            
             print()
         
-        print(f"\n{'='*60}")
-        print(f"Training complete!")
+        # Complete
+        print("\n" + "="*60)
+        print("Training Complete!")
+        print("="*60)
         print(f"Best validation loss: {self.best_val_loss:.4f}")
-        print(f"{'='*60}\n")
+        print(f"Total epochs: {epoch+1}")
+        print("="*60 + "\n")
         
         self.writer.close()

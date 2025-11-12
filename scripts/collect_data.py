@@ -293,8 +293,8 @@ def main():
     print("=" * 80)
     
     # ========== CONFIGURATION ==========
-    NUM_CYCLES = 2
-    NUM_SIMULATIONS_PER_WEATHER = 10
+    NUM_CYCLES = 10
+    NUM_SIMULATIONS_PER_WEATHER = 500
     MIN_TRAJECTORIES_PER_WEATHER = 3  # NEW: Guarantee minimum per weather
     
     print(f"\nConfiguration:")

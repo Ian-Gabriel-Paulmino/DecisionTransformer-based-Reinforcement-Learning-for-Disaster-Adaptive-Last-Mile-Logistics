@@ -1,1 +1,5 @@
-/cache
+cache/
+data/
+checkpoints/
+runs/
+DecisionTransformer/__pycache__/

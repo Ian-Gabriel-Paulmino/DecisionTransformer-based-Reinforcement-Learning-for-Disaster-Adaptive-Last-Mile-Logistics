@@ -35,7 +35,8 @@ class DecisionTransformerPlanner:
         
         # Load model
         print(f"Loading model from {model_path}...")
-        checkpoint = torch.load(model_path, map_location='cpu')
+        # checkpoint = torch.load(model_path, map_location='cpu')
+        checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
         config_dict = checkpoint['config']
         
         # Recreate config
